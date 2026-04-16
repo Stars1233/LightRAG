@@ -301,7 +301,7 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.cyan(banner)
 
     # Server Configuration
-    ASCIIColors.magenta("\n📡 Server Configuration:")
+    ASCIIColors.magenta("\n📡 服务器配置:")
     ASCIIColors.white("    ├─ Host: ", end="")
     ASCIIColors.yellow(f"{args.host}")
     ASCIIColors.white("    ├─ Port: ", end="")
@@ -331,14 +331,14 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow("Enabled" if args.auth_accounts else "Disabled")
 
     # Directory Configuration
-    ASCIIColors.magenta("\n📂 Directory Configuration:")
+    ASCIIColors.magenta("\n📂 目录配置:")
     ASCIIColors.white("    ├─ Working Directory: ", end="")
     ASCIIColors.yellow(f"{args.working_dir}")
     ASCIIColors.white("    └─ Input Directory: ", end="")
     ASCIIColors.yellow(f"{args.input_dir}")
 
     # LLM Configuration
-    ASCIIColors.magenta("\n🤖 LLM Configuration:")
+    ASCIIColors.magenta("\n🤖 大模型配置:")
     ASCIIColors.white("    ├─ Binding: ", end="")
     ASCIIColors.yellow(f"{args.llm_binding}")
     ASCIIColors.white("    ├─ Host: ", end="")
@@ -355,7 +355,7 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.enable_llm_cache_for_extract}")
 
     # Embedding Configuration
-    ASCIIColors.magenta("\n📊 Embedding Configuration:")
+    ASCIIColors.magenta("\n📊 向量模型配置:")
     ASCIIColors.white("    ├─ Binding: ", end="")
     ASCIIColors.yellow(f"{args.embedding_binding}")
     ASCIIColors.white("    ├─ Host: ", end="")
@@ -366,7 +366,7 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.embedding_dim}")
 
     # RAG Configuration
-    ASCIIColors.magenta("\n⚙️ RAG Configuration:")
+    ASCIIColors.magenta("\n⚙️ RAG配置:")
     ASCIIColors.white("    ├─ Summary Language: ", end="")
     ASCIIColors.yellow(f"{args.summary_language}")
     ASCIIColors.white("    ├─ Entity Types: ", end="")
@@ -387,7 +387,7 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     )
 
     # System Configuration
-    ASCIIColors.magenta("\n💾 Storage Configuration:")
+    ASCIIColors.magenta("\n💾 存储配置:")
     ASCIIColors.white("    ├─ KV Storage: ", end="")
     ASCIIColors.yellow(f"{args.kv_storage}")
     ASCIIColors.white("    ├─ Vector Storage: ", end="")
@@ -400,12 +400,12 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.workspace if args.workspace else '-'}")
 
     # Server Status
-    ASCIIColors.green("\n✨ Server starting up...\n")
+    ASCIIColors.green("\n✨ 服务器正在启动...\n")
 
     # Server Access Information
     protocol = "https" if args.ssl else "http"
     if args.host == "0.0.0.0":
-        ASCIIColors.magenta("\n🌐 Server Access Information:")
+        ASCIIColors.magenta("\n🌐 服务器访问信息:")
         ASCIIColors.white("    ├─ WebUI (local): ", end="")
         ASCIIColors.yellow(f"{protocol}://localhost:{args.port}")
         ASCIIColors.white("    ├─ Remote Access: ", end="")
@@ -415,7 +415,7 @@ def display_splash_screen(args: argparse.Namespace) -> None:
         ASCIIColors.white("    └─ Alternative Documentation (local): ", end="")
         ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/redoc")
 
-        ASCIIColors.magenta("\n📝 Note:")
+        ASCIIColors.magenta("\n📝 Note注释:")
         ASCIIColors.cyan("""    Since the server is running on 0.0.0.0:
     - Use 'localhost' or '127.0.0.1' for local access
     - Use your machine's IP address for remote access
