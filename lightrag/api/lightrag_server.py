@@ -70,6 +70,7 @@ from lightrag.api.auth import auth_handler
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
 
+print("【测试】我改到了 lightrag_server.py，后端正在启动")
 
 webui_title = os.getenv("WEBUI_TITLE")
 webui_description = os.getenv("WEBUI_DESCRIPTION")
