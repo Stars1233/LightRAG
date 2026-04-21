@@ -19,6 +19,18 @@ export default {
       },
     },
     extend: {
+      fontSize: {
+        'xs': ['1.125rem', { lineHeight: '1.5' }],
+        'sm': ['1.25rem', { lineHeight: '1.5' }],
+        'base': ['1.5rem', { lineHeight: '1.5' }],
+        'lg': ['1.875rem', { lineHeight: '1.4' }],
+        'xl': ['2.25rem', { lineHeight: '1.4' }],
+        '2xl': ['3rem', { lineHeight: '1.3' }],
+        '3xl': ['3.75rem', { lineHeight: '1.3' }],
+        '4xl': ['4.5rem', { lineHeight: '1.2' }],
+        '5xl': ['6rem', { lineHeight: '1.2' }],
+        '6xl': ['8rem', { lineHeight: '1.1' }],
+      },
       colors: {
         border: 'hsl(var(--border))',
         input: 'hsl(var(--input))',
