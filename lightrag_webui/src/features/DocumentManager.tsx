@@ -1266,7 +1266,7 @@ export default function DocumentManager() {
                     onClick={() => handleStatusFilterChange('all')}
                     disabled={isRefreshing}
                     className={cn(
-                      statusFilter === 'all' && 'bg-stone-100 dark:bg-stone-900/30 text-stone-900 dark:text-stone-100 font-medium border border-stone-400 dark:border-stone-600 shadow-sm'
+                      statusFilter === 'all' && 'bg-gray-100 dark:bg-gray-900 font-medium border border-gray-400 dark:border-gray-500 shadow-sm'
                     )}
                   >
                     {t('documentPanel.documentManager.status.all')} ({statusCounts.all || documentCounts.all})
