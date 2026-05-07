@@ -110,18 +110,20 @@ const formatMetadata = (metadata: Record<string, any>): string => {
     .join('\n');
 };
 
-const hasDocumentDetails = (doc: DocStatusResponse): boolean =>
-  Boolean(
-    doc.file_path ||
+const hasDocumentDetails = (doc: DocStatusResponse): boolean => {
+  const extraDocFields = doc as DocStatusResponse & {
+    extraction_format?: unknown
+    engine?: unknown
+  }
+
+  return Boolean(
     doc.track_id ||
     doc.error_msg ||
-    (doc.metadata && Object.keys(doc.metadata).length > 0)
+    (doc.metadata && Object.keys(doc.metadata).length > 0) ||
+    extraDocFields.extraction_format !== undefined ||
+    extraDocFields.engine !== undefined
   )
-
-const getFallbackExtractionDetails = (): Record<string, string> => ({
-  extraction_format: 'plain_text_chunking',
-  engine: 'legacy'
-})
+}
 
 const formatDocumentDetails = (doc: DocStatusResponse): string => {
   const details: string[] = []
@@ -129,9 +131,7 @@ const formatDocumentDetails = (doc: DocStatusResponse): string => {
     extraction_format?: unknown
     engine?: unknown
   }
-  const fallbackExtractionDetails = getFallbackExtractionDetails()
   const metadata = {
-    ...fallbackExtractionDetails,
     ...(doc.metadata ?? {}),
     ...(!doc.metadata?.extraction_format && extraDocFields.extraction_format !== undefined
       ? { extraction_format: extraDocFields.extraction_format }
@@ -146,7 +146,7 @@ const formatDocumentDetails = (doc: DocStatusResponse): string => {
   }
 
   if (Object.keys(metadata).length > 0) {
-    details.push(`Metadata:\n${formatMetadata(metadata)}`)
+    details.push(formatMetadata(metadata))
   }
 
   if (doc.error_msg) {
