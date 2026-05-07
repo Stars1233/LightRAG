@@ -25,6 +25,7 @@ from lightrag.kg.opensearch_impl import (
     _build_index_name,
     _resolve_workspace,
     _sanitize_index_name,
+    _verify_mirrored_id_mapping,
 )
 from lightrag.base import DocStatus, DocProcessingStatus
 
@@ -55,6 +56,16 @@ def patch_data_init_lock():
     with patch(
         "lightrag.kg.opensearch_impl.get_data_init_lock", side_effect=_mock_lock_factory
     ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def patch_shard_doc_supported():
+    """Default tests to OpenSearch >= 3.3.0 so the __mirrored_id verification is a no-op.
+
+    Tests covering the < 3.3.0 fallback should override this with their own patch.
+    """
+    with patch("lightrag.kg.opensearch_impl._shard_doc_supported", True):
         yield
 
 
@@ -193,11 +204,22 @@ class TestHelpers:
 class TestClientManager:
     """Tests for ClientManager singleton pattern and reference counting."""
 
+    @staticmethod
+    def _stub_client(version: str = "3.3.0") -> AsyncMock:
+        """Build an AsyncMock client with a concrete .info() payload.
+
+        Without this stub, _detect_shard_doc_support's chained .get(...) calls
+        on an AsyncMock would leak un-awaited coroutines.
+        """
+        client = AsyncMock()
+        client.info = AsyncMock(return_value={"version": {"number": version}})
+        return client
+
     @pytest.mark.asyncio
     async def test_singleton_and_refcount(self):
         ClientManager._instances = {"client": None, "ref_count": 0}
         with patch("lightrag.kg.opensearch_impl.AsyncOpenSearch") as mock_cls:
-            mock_cls.return_value = AsyncMock()
+            mock_cls.return_value = self._stub_client()
             c1 = await ClientManager.get_client()
             c2 = await ClientManager.get_client()
             assert c1 is c2
@@ -212,11 +234,63 @@ class TestClientManager:
     async def test_close_called_on_last_release(self):
         ClientManager._instances = {"client": None, "ref_count": 0}
         with patch("lightrag.kg.opensearch_impl.AsyncOpenSearch") as mock_cls:
-            inner = AsyncMock()
+            inner = self._stub_client()
             mock_cls.return_value = inner
             c = await ClientManager.get_client()
             await ClientManager.release_client(c)
             inner.close.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# _verify_mirrored_id_mapping helper
+# ---------------------------------------------------------------------------
+
+
+class TestMirroredIdVerification:
+    """Tests for the _verify_mirrored_id_mapping fail-fast helper."""
+
+    @pytest.mark.asyncio
+    async def test_skipped_on_modern_cluster(self, mock_client):
+        """On OpenSearch >= 3.3.0 the mapping check is short-circuited."""
+        # _shard_doc_supported is True via autouse fixture.
+        await _verify_mirrored_id_mapping(mock_client, "any_index")
+        mock_client.indices.get_mapping.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_passes_when_mapping_present(self, mock_client):
+        """On OpenSearch < 3.3.0 a mapping containing __mirrored_id is accepted."""
+        mock_client.indices.get_mapping = AsyncMock(
+            return_value={
+                "my_index": {
+                    "mappings": {"properties": {"__mirrored_id": {"type": "keyword"}}}
+                }
+            }
+        )
+        with patch("lightrag.kg.opensearch_impl._shard_doc_supported", False):
+            await _verify_mirrored_id_mapping(mock_client, "my_index")
+
+    @pytest.mark.asyncio
+    async def test_fails_fast_when_mapping_missing(self, mock_client):
+        """On OpenSearch < 3.3.0 a legacy index without __mirrored_id raises."""
+        mock_client.indices.get_mapping = AsyncMock(
+            return_value={
+                "my_index": {
+                    "mappings": {"properties": {"other_field": {"type": "text"}}}
+                }
+            }
+        )
+        with patch("lightrag.kg.opensearch_impl._shard_doc_supported", False):
+            with pytest.raises(RuntimeError, match="__mirrored_id"):
+                await _verify_mirrored_id_mapping(mock_client, "my_index")
+
+    @pytest.mark.asyncio
+    async def test_swallows_get_mapping_error(self, mock_client):
+        """Mapping-fetch failures should not block initialization."""
+        mock_client.indices.get_mapping = AsyncMock(
+            side_effect=OpenSearchException("transport error")
+        )
+        with patch("lightrag.kg.opensearch_impl._shard_doc_supported", False):
+            await _verify_mirrored_id_mapping(mock_client, "my_index")
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +332,28 @@ class TestKVStorage:
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
+            mock_client.indices.create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_initialize_fails_on_legacy_index_without_mirrored_id(
+        self, global_config, embed_func, mock_client
+    ):
+        """On OpenSearch < 3.3.0, an existing index lacking __mirrored_id must fail-fast."""
+        mock_client.indices.exists = AsyncMock(return_value=True)
+        mock_client.indices.get_mapping = AsyncMock(
+            return_value={
+                "test_text_chunks": {
+                    "mappings": {"properties": {"content": {"type": "text"}}}
+                }
+            }
+        )
+        with (
+            patch.object(ClientManager, "get_client", return_value=mock_client),
+            patch("lightrag.kg.opensearch_impl._shard_doc_supported", False),
+        ):
+            s = self._make(global_config, embed_func)
+            with pytest.raises(RuntimeError, match="__mirrored_id"):
+                await s.initialize()
             mock_client.indices.create.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1080,28 +1176,24 @@ class TestGraphStorage:
 
     @pytest.mark.asyncio
     async def test_get_edge(self, global_config, embed_func, mock_client):
-        mock_client.search = AsyncMock(
+        # get_edge now uses mget (translog real-time) instead of search.
+        mock_client.mget = AsyncMock(
             return_value={
-                "hits": {
-                    "hits": [
-                        {
-                            "_id": "e1",
-                            "_source": {
-                                "source_node_id": "A",
-                                "target_node_id": "B",
-                                "weight": 1.0,
-                            },
+                "docs": [
+                    {
+                        "_id": "e1",
+                        "found": True,
+                        "_source": {
+                            "source_node_id": "A",
+                            "target_node_id": "B",
+                            "weight": 1.0,
                         },
-                    ],
-                    "total": {"value": 1},
-                },
-                "aggregations": {
-                    "status_counts": {"buckets": []},
-                    "src": {"buckets": []},
-                    "tgt": {"buckets": []},
-                    "source_degrees": {"buckets": []},
-                    "target_degrees": {"buckets": []},
-                },
+                    },
+                    {
+                        "_id": "e2",
+                        "found": False,
+                    },
+                ]
             }
         )
         with patch.object(ClientManager, "get_client", return_value=mock_client):
@@ -1208,6 +1300,42 @@ class TestGraphStorage:
             assert mock_client.index.await_count == 2
 
     @pytest.mark.asyncio
+    async def test_upsert_edges_batch_reuses_id_for_reciprocal_edges(
+        self, global_config, embed_func, mock_client
+    ):
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+
+            bulk_calls = []
+
+            async def capture_bulk(_client, actions, *args, **kwargs):
+                bulk_calls.append(list(actions))
+                return (len(bulk_calls[-1]), [])
+
+            mock_client.mget = AsyncMock(
+                side_effect=[
+                    {"docs": []},
+                    {"docs": [{"_id": "edge-ba", "found": False}] * 2},
+                ]
+            )
+
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk",
+                new=AsyncMock(side_effect=capture_bulk),
+            ):
+                await s.upsert_edges_batch(
+                    [
+                        ("A", "B", {"weight": "1.0"}),
+                        ("B", "A", {"weight": "2.0"}),
+                    ]
+                )
+
+            edge_actions = bulk_calls[-1]
+            assert len(edge_actions) == 2
+            assert edge_actions[0]["_id"] == edge_actions[1]["_id"]
+
+    @pytest.mark.asyncio
     async def test_upsert_after_drop_recreates_indices(
         self, global_config, embed_func, mock_client
     ):
@@ -1293,11 +1421,17 @@ class TestGraphStorage:
 
     @pytest.mark.asyncio
     async def test_remove_edges(self, global_config, embed_func, mock_client):
+        # remove_edges now uses bulk delete with deterministic IDs instead of
+        # delete_by_query, so mock bulk as AsyncMock.
+        mock_client.bulk = AsyncMock(return_value={"errors": False, "items": []})
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
             await s.remove_edges([("A", "B"), ("C", "D")])
-            mock_client.delete_by_query.assert_awaited_once()
+            # 2 edges × 2 candidate directions = 4 delete actions in one bulk call
+            mock_client.bulk.assert_awaited_once()
+            call_body = mock_client.bulk.call_args.kwargs["body"]
+            assert len(call_body) == 4
 
     @pytest.mark.asyncio
     async def test_get_all_labels(self, global_config, embed_func, mock_client):
@@ -1340,6 +1474,144 @@ class TestGraphStorage:
             await s.initialize()
             labels = await s.get_popular_labels(limit=10)
             assert labels[0] == "A"  # degree 8 > B degree 2
+
+    @pytest.mark.asyncio
+    async def test_get_knowledge_graph_all_backfills_isolated_nodes_when_truncated(
+        self, global_config, embed_func, mock_client
+    ):
+        mock_client.count = AsyncMock(return_value={"count": 5})
+        mock_client.search = AsyncMock(
+            side_effect=[
+                {
+                    "hits": {"hits": [], "total": {"value": 1}},
+                    "aggregations": {
+                        "src": {"buckets": [{"key": "A", "doc_count": 1}]},
+                        "tgt": {"buckets": [{"key": "B", "doc_count": 1}]},
+                        "status_counts": {"buckets": []},
+                    },
+                },
+                {
+                    "hits": {
+                        "hits": [
+                            {"_id": "A", "sort": [1]},
+                            {"_id": "B", "sort": [2]},
+                            {"_id": "C", "sort": [3]},
+                            {"_id": "D", "sort": [4]},
+                            {"_id": "E", "sort": [5]},
+                        ],
+                        "total": {"value": 5},
+                    }
+                },
+                {
+                    "hits": {
+                        "hits": [
+                            {
+                                "_id": "edge-ab",
+                                "_source": {
+                                    "source_node_id": "A",
+                                    "target_node_id": "B",
+                                    "relationship": "knows",
+                                },
+                            }
+                        ],
+                        "total": {"value": 1},
+                    }
+                },
+            ]
+        )
+        mock_client.mget = AsyncMock(
+            return_value={
+                "docs": [
+                    {"_id": "A", "found": True, "_source": {"entity_type": "person"}},
+                    {"_id": "B", "found": True, "_source": {"entity_type": "person"}},
+                    {"_id": "C", "found": True, "_source": {"entity_type": "person"}},
+                    {"_id": "D", "found": True, "_source": {"entity_type": "person"}},
+                ]
+            }
+        )
+
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+
+            result = await s.get_knowledge_graph("*", max_nodes=4)
+
+            assert result.is_truncated is True
+            assert [node.id for node in result.nodes] == ["A", "B", "C", "D"]
+            assert len(result.edges) == 1
+            assert result.edges[0].source == "A"
+            assert result.edges[0].target == "B"
+            assert mock_client.create_pit.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_get_knowledge_graph_all_paginates_edges_between_selected_nodes(
+        self, global_config, embed_func, mock_client
+    ):
+        mock_client.count = AsyncMock(return_value={"count": 2})
+        first_edge_page = [
+            {
+                "_id": f"edge-{i}",
+                "_source": {
+                    "source_node_id": "A",
+                    "target_node_id": "B",
+                    "relationship": "knows",
+                },
+                "sort": [i],
+            }
+            for i in range(10000)
+        ]
+        mock_client.search = AsyncMock(
+            side_effect=[
+                {
+                    "hits": {
+                        "hits": [
+                            {"_id": "A"},
+                            {"_id": "B"},
+                        ],
+                        "total": {"value": 2},
+                    }
+                },
+                {"hits": {"hits": first_edge_page, "total": {"value": 10001}}},
+                {
+                    "hits": {
+                        "hits": [
+                            {
+                                "_id": "edge-last",
+                                "_source": {
+                                    "source_node_id": "B",
+                                    "target_node_id": "A",
+                                    "relationship": "knows",
+                                },
+                                "sort": [10000],
+                            }
+                        ],
+                        "total": {"value": 10001},
+                    }
+                },
+            ]
+        )
+        mock_client.mget = AsyncMock(
+            return_value={
+                "docs": [
+                    {"_id": "A", "found": True, "_source": {"entity_type": "person"}},
+                    {"_id": "B", "found": True, "_source": {"entity_type": "person"}},
+                ]
+            }
+        )
+
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+
+            result = await s.get_knowledge_graph("*", max_nodes=2)
+
+            assert len(result.nodes) == 2
+            assert len(result.edges) == 2
+            assert {(edge.source, edge.target) for edge in result.edges} == {
+                ("A", "B"),
+                ("B", "A"),
+            }
+            assert mock_client.search.await_count == 3
 
     @pytest.mark.asyncio
     async def test_search_labels_empty_query(
@@ -1687,6 +1959,111 @@ class TestGraphPPLDetection:
             result = await s.get_knowledge_graph("A", max_depth=2)
             assert len(result.nodes) == 1
             assert result.nodes[0].id == "A"
+
+    @pytest.mark.asyncio
+    async def test_ppl_bfs_truncates_nodes_by_depth_then_weight(
+        self, global_config, embed_func, mock_client
+    ):
+        mock_client.transport = AsyncMock()
+        ppl_response = {
+            "schema": [
+                {"name": "entity_id", "type": "string"},
+                {"name": "connected_edges", "type": "struct"},
+            ],
+            "datarows": [
+                [
+                    "A",
+                    [
+                        {
+                            "source_node_id": "A",
+                            "target_node_id": "C",
+                            "weight": 1.0,
+                            "_depth": 1,
+                        },
+                        {
+                            "source_node_id": "B",
+                            "target_node_id": "D",
+                            "weight": 10.0,
+                            "_depth": 1,
+                        },
+                        {
+                            "source_node_id": "A",
+                            "target_node_id": "B",
+                            "weight": 1.0,
+                            "_depth": 0,
+                        },
+                    ],
+                ]
+            ],
+        }
+        mock_client.transport.perform_request = AsyncMock(return_value=ppl_response)
+        mock_client.mget = AsyncMock(
+            side_effect=[
+                {
+                    "docs": [
+                        {
+                            "_id": "A",
+                            "found": True,
+                            "_source": {"entity_type": "person"},
+                        }
+                    ]
+                },
+                {
+                    "docs": [
+                        {
+                            "_id": "B",
+                            "found": True,
+                            "_source": {"entity_type": "person"},
+                        },
+                        {
+                            "_id": "D",
+                            "found": True,
+                            "_source": {"entity_type": "person"},
+                        },
+                    ]
+                },
+            ]
+        )
+        mock_client.search = AsyncMock(
+            return_value={
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "e1",
+                            "_source": {
+                                "source_node_id": "A",
+                                "target_node_id": "B",
+                                "relationship": "knows",
+                            },
+                            "sort": [1],
+                        },
+                        {
+                            "_id": "e2",
+                            "_source": {
+                                "source_node_id": "B",
+                                "target_node_id": "D",
+                                "relationship": "knows",
+                            },
+                            "sort": [2],
+                        },
+                    ],
+                    "total": {"value": 2},
+                }
+            }
+        )
+
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+
+            result = await s.get_knowledge_graph("A", max_depth=2, max_nodes=3)
+
+            assert [node.id for node in result.nodes] == ["A", "B", "D"]
+            assert result.is_truncated is True
+            assert {(edge.source, edge.target) for edge in result.edges} == {
+                ("A", "B"),
+                ("B", "D"),
+            }
 
     @pytest.mark.asyncio
     async def test_upsert_node_adds_entity_id(

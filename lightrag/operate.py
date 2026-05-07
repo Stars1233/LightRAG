@@ -2188,9 +2188,6 @@ async def _merge_edges_then_upsert(
             limit_method = global_config.get(
                 "source_ids_limit_method", SOURCE_IDS_LIMIT_METHOD_KEEP
             )
-            file_path_placeholder = global_config.get(
-                "file_path_more_placeholder", DEFAULT_FILE_PATH_MORE_PLACEHOLDER
-            )
 
             # Add + sign to indicate actual file count is higher
             original_count_str = (
@@ -3640,7 +3637,7 @@ async def _perform_kg_search(
         if texts_to_embed:
             try:
                 all_embeddings = await actual_embedding_func(
-                    texts_to_embed, _priority=5
+                    texts_to_embed, context="query", _priority=5
                 )
                 for i, purpose in enumerate(text_purposes):
                     if purpose == "query":

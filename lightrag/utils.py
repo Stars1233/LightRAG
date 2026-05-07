@@ -440,12 +440,22 @@ class EmbeddingFunc:
             # ✅ Correct - access the unwrapped function via .func
             func=partial(ollama_embed.func, embed_model="bge-m3:latest", host="http://localhost:11434")
 
+    Context-aware embedding:
+        The wrapper supports passing a 'context' parameter to distinguish between query and document
+        embeddings. This allows wrapped functions to apply different processing (e.g., prefixes,
+        different models) based on the context:
+
+        Example:
+            embeddings = await embed_func(texts, context="document")  # For indexing
+            embeddings = await embed_func([query], context="query")   # For search
+
     Args:
         embedding_dim: Expected dimension of the embeddings(For dimension checking and workspace data isolation in vector DB)
         func: The actual embedding function to wrap
         max_token_size: Enable embedding token limit checking for description summarization(Set embedding_token_limit in LightRAG)
         send_dimensions: Whether to inject embedding_dim argument to underlying function
         model_name: Model name for implementing workspace data isolation in vector DB
+        supports_asymmetric: Whether the underlying function supports context parameter so it can be injected
     """
 
     embedding_dim: int
@@ -454,6 +464,9 @@ class EmbeddingFunc:
     send_dimensions: bool = False
     model_name: str | None = (
         None  # Model name for implementing workspace data isolation in vector DB
+    )
+    supports_asymmetric: bool = (
+        False  # Whether underlying function accepts context parameter
     )
 
     def __post_init__(self):
@@ -502,6 +515,14 @@ class EmbeddingFunc:
 
             # Inject embedding_dim from decorator
             kwargs["embedding_dim"] = self.embedding_dim
+
+        # Remove context parameter if underlying function does not support asymmetric embedding
+        if "context" in kwargs and not self.supports_asymmetric:
+            # Log when a user-provided context is ignored due to lack of support
+            logger.debug(
+                "Context parameter was provided but supports_asymmetric=False. The context value has been ignored."
+            )
+            kwargs.pop("context")
 
         # Check if underlying function supports max_token_size and inject if not provided
         if self.max_token_size is not None and "max_token_size" not in kwargs:
@@ -565,6 +586,23 @@ def compute_mdhash_id(content: str, prefix: str = "") -> str:
     The ID is a combination of the given prefix and the MD5 hash of the content string.
     """
     return prefix + compute_args_hash(content)
+
+
+def make_relation_vdb_ids(src_entity: str, tgt_entity: str) -> list[str]:
+    """Return candidate relation VDB IDs for an undirected edge.
+
+    The normalized ID is returned first for all new writes. The reverse-order ID is
+    kept as a compatibility fallback for historical custom-KG imports that hashed
+    the relation using the original endpoint order.
+    """
+    normalized_src, normalized_tgt = sorted((src_entity, tgt_entity))
+    relation_ids = [compute_mdhash_id(normalized_src + normalized_tgt, prefix="rel-")]
+    reverse_relation_id = compute_mdhash_id(
+        normalized_tgt + normalized_src, prefix="rel-"
+    )
+    if reverse_relation_id not in relation_ids:
+        relation_ids.append(reverse_relation_id)
+    return relation_ids
 
 
 def generate_cache_key(mode: str, cache_type: str, hash_value: str) -> str:
@@ -1102,25 +1140,58 @@ def wrap_embedding_func_with_attrs(**kwargs):
             return await my_embed.func(texts, ...)  # ✅ Correct
             # return await my_embed(texts, ...)     # ❌ Wrong - double decoration!
         ```
+    3. Context-aware decoration:
+        ```python
+        @wrap_embedding_func_with_attrs(
+            embedding_dim=1536,
+            model_name="my_embedding_model",
+            supports_asymmetric=True
+        )
+        async def my_embed(texts, context="document"):
+            # Apply different prefixes based on context
+            if context == "query":
+                texts = ["search_query: " + t for t in texts]
+            elif context == "document":
+                texts = ["search_document: " + t for t in texts]
+            return embeddings
+        ```
 
     The decorated function becomes an EmbeddingFunc instance with:
     - embedding_dim: The embedding dimension
     - max_token_size: Maximum token limit (optional)
     - model_name: Model name (optional)
+    - supports_asymmetric: Whether context parameter is supported (optional)
     - func: The original unwrapped function (access via .func)
-    - __call__: Wrapper that injects embedding_dim parameter
+    - __call__: Wrapper that injects embedding_dim parameter and context
 
     Args:
         embedding_dim: The dimension of embedding vectors
         max_token_size: Maximum number of tokens (optional)
         send_dimensions: Whether to pass embedding_dim as a keyword argument (for models with configurable embedding dimensions).
+        supports_asymmetric: Whether the function supports context parameter (optional).
+            If omitted, this is auto-detected from the wrapped function's signature
+            (set to True iff the function accepts a ``context`` parameter).
 
     Returns:
         A decorator that wraps the function as an EmbeddingFunc instance
     """
 
     def final_decro(func) -> EmbeddingFunc:
-        new_func = EmbeddingFunc(**kwargs, func=func)
+        embedding_kwargs = dict(kwargs)
+        # Auto-detect supports_asymmetric from the wrapped function's signature
+        # if the caller did not declare it explicitly. Without this, any user or
+        # third-party embed function that accepts a `context` parameter but
+        # forgets to set ``supports_asymmetric=True`` would have its `context`
+        # silently dropped by ``EmbeddingFunc.__call__``, defeating the
+        # task-aware embedding feature.
+        if "supports_asymmetric" not in embedding_kwargs:
+            try:
+                sig = inspect.signature(func)
+                embedding_kwargs["supports_asymmetric"] = "context" in sig.parameters
+            except (TypeError, ValueError):
+                # inspect.signature can fail for builtins; fall back to False.
+                embedding_kwargs["supports_asymmetric"] = False
+        new_func = EmbeddingFunc(**embedding_kwargs, func=func)
         return new_func
 
     return final_decro
@@ -1620,8 +1691,11 @@ async def aexport_data(
 
                 # Optional: Get vector database information
                 if include_vector_data:
-                    rel_id = compute_mdhash_id(src_entity + tgt_entity, prefix="rel-")
-                    vector_data = await relationships_vdb.get_by_id(rel_id)
+                    vector_data = None
+                    for rel_id in make_relation_vdb_ids(src_entity, tgt_entity):
+                        vector_data = await relationships_vdb.get_by_id(rel_id)
+                        if vector_data is not None:
+                            break
                     relation_info["vector_data"] = vector_data
 
                 relation_row = {
@@ -1946,11 +2020,19 @@ async def update_chunk_cache_list(
 
 
 def remove_think_tags(text: str) -> str:
-    """Remove <think>...</think> tags from the text
-    Remove  orphon ...</think> tags from the text also"""
-    return re.sub(
-        r"^(<think>.*?</think>|.*</think>)", "", text, flags=re.DOTALL
-    ).strip()
+    """Remove <think>...</think> tags and their content from the text.
+
+    Handles two cases:
+    1. Complete <think>...</think> blocks anywhere in the text.
+    2. Orphaned </think> at the very start (e.g., from streaming that begins
+       mid-think-block), removing everything before and including it.
+    """
+    # First, remove orphaned </think> prefix (content before first </think>
+    # when there is no preceding <think> tag)
+    text = re.sub(r"^((?!<think>).)*?</think>", "", text, flags=re.DOTALL)
+    # Then remove all complete <think>...</think> blocks
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    return text.strip()
 
 
 async def use_llm_func_with_cache(
@@ -2460,7 +2542,7 @@ async def pick_by_vector_similarity(
     try:
         # Use pre-computed query embedding if provided, otherwise compute it
         if query_embedding is None:
-            query_embedding = await embedding_func([query])
+            query_embedding = await embedding_func([query], context="query")
             query_embedding = query_embedding[
                 0
             ]  # Extract first embedding from batch result
@@ -3123,13 +3205,12 @@ def create_prefixed_exception(original_exception: Exception, prefix: str) -> Exc
         else:
             # Method 2: If no args, try single parameter construction.
             return type(original_exception)(f"{prefix}: {str(original_exception)}")
-    except (TypeError, ValueError, AttributeError) as construct_error:
+    except (TypeError, ValueError, AttributeError):
         # Method 3: If reconstruction fails, wrap it in a RuntimeError.
         # This is the safest fallback, as attempting to create the same type
         # with a single string can fail if the constructor requires multiple arguments.
         return RuntimeError(
-            f"{prefix}: {type(original_exception).__name__}: {str(original_exception)} "
-            f"(Original exception could not be reconstructed: {construct_error})"
+            f"{prefix}: {type(original_exception).__name__}: {str(original_exception)}"
         )
 
 

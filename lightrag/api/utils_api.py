@@ -140,7 +140,7 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
 
                 # ========== Token Auto-Renewal Logic ==========
                 from lightrag.api.config import global_args
-                from datetime import datetime
+                from datetime import datetime, timezone
 
                 if global_args.token_auto_renew:
                     # Check if current path should skip token renewal
@@ -156,7 +156,7 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
                             expire_time = token_info.get("exp")
                             if expire_time:
                                 # Calculate remaining time ratio
-                                now = datetime.utcnow()
+                                now = datetime.now(timezone.utc)
                                 remaining_seconds = (expire_time - now).total_seconds()
 
                                 # Get original token expiration duration
@@ -362,8 +362,10 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.embedding_binding_host}")
     ASCIIColors.white("    ├─ Model: ", end="")
     ASCIIColors.yellow(f"{args.embedding_model}")
-    ASCIIColors.white("    └─ Dimensions: ", end="")
+    ASCIIColors.white("    ├─ Dimensions: ", end="")
     ASCIIColors.yellow(f"{args.embedding_dim}")
+    ASCIIColors.white("    └─ Asymmetric: ", end="")
+    ASCIIColors.yellow(f"{args.embedding_asymmetric}")
 
     # RAG Configuration
     ASCIIColors.magenta("\n⚙️ RAG Configuration:")

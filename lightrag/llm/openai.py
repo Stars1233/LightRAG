@@ -78,6 +78,15 @@ class InvalidResponseError(Exception):
 # Module-level cache for tiktoken encodings
 _TIKTOKEN_ENCODING_CACHE: dict[str, Any] = {}
 
+# Whether to request base64-encoded embeddings from the API.
+# Base64 is more efficient over the wire; set EMBEDDING_USE_BASE64=false for
+# providers that don't support it (e.g. Yandex Cloud).
+EMBEDDING_USE_BASE64: bool = os.getenv("EMBEDDING_USE_BASE64", "true").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+
 
 def _get_tiktoken_encoding_for_model(model: str) -> Any:
     """Get tiktoken encoding for the specified model with caching.
@@ -327,8 +336,13 @@ async def openai_complete_if_cache(
     try:
         # Don't use async with context manager, use client directly
         if "response_format" in kwargs:
+            # beta.chat.completions.parse() provides structured output and is inherently
+            # non-streaming; passing `stream=True` would raise a TypeError at runtime.
+            # Strip `stream` from kwargs before forwarding to avoid this error when
+            # OpenAI-compatible providers (e.g. DeepSeek) set stream in their kwargs.
+            parse_kwargs = {k: v for k, v in kwargs.items() if k != "stream"}
             response = await openai_async_client.chat.completions.parse(
-                model=api_model, messages=messages, **kwargs
+                model=api_model, messages=messages, **parse_kwargs
             )
         else:
             response = await openai_async_client.chat.completions.create(
@@ -347,8 +361,19 @@ async def openai_complete_if_cache(
         await openai_async_client.close()  # Ensure client is closed
         raise
     except Exception as e:
+        body = getattr(e, "body", None)
+        request_id = getattr(e, "request_id", None)
+        req = getattr(e, "request", None)
+        extra_parts = []
+        if body:
+            extra_parts.append(f"Response body: {body}")
+        if request_id:
+            extra_parts.append(f"Request ID: {request_id}")
+        if req is not None:
+            extra_parts.append(f"Request URL: {req.url}")
+        extra = ("\n" + "\n".join(extra_parts)) if extra_parts else ""
         logger.error(
-            f"OpenAI API Call Failed,\nModel: {model},\nParams: {kwargs}, Got: {e}"
+            f"OpenAI API Call Failed,\nModel: {model},\nParams: {kwargs}, Got: {e}{extra}"
         )
         await openai_async_client.close()  # Ensure client is closed
         raise
@@ -703,7 +728,10 @@ async def nvidia_openai_complete(
 
 
 @wrap_embedding_func_with_attrs(
-    embedding_dim=1536, max_token_size=8192, model_name="text-embedding-3-small"
+    embedding_dim=1536,
+    max_token_size=8192,
+    model_name="text-embedding-3-small",
+    supports_asymmetric=True,
 )
 @retry(
     stop=stop_after_attempt(3),
@@ -726,6 +754,9 @@ async def openai_embed(
     use_azure: bool = False,
     azure_deployment: str | None = None,
     api_version: str | None = None,
+    context: str = "document",
+    query_prefix: str | None = None,
+    document_prefix: str | None = None,
 ) -> np.ndarray:
     """Generate embeddings for a list of texts using OpenAI's API with automatic text truncation.
 
@@ -763,6 +794,11 @@ async def openai_embed(
         api_version: Azure OpenAI API version (e.g., "2024-02-15-preview"). Only used
             when use_azure=True. If not specified, falls back to AZURE_EMBEDDING_API_VERSION
             environment variable.
+        context: The embedding context - "query" for search queries, "document" for indexed content.
+            **IMPORTANT**: This parameter is automatically injected by the EmbeddingFunc wrapper
+            when supports_asymmetric=True. Default is "document".
+        query_prefix: Optional prefix to prepend to texts when context="query" (e.g., "search_query: ").
+        document_prefix: Optional prefix to prepend to texts when context="document" (e.g., "search_document: ").
 
     Returns:
         A numpy array of embeddings, one per input text.
@@ -772,6 +808,11 @@ async def openai_embed(
         RateLimitError: If the OpenAI API rate limit is exceeded.
         APITimeoutError: If the OpenAI API request times out.
     """
+    # Apply context-based prefixes if provided
+    if context == "query" and query_prefix:
+        texts = [query_prefix + text for text in texts]
+    elif context == "document" and document_prefix:
+        texts = [document_prefix + text for text in texts]
     # Apply text truncation if max_token_size is provided
     if max_token_size is not None and max_token_size > 0:
         encoding = _get_tiktoken_encoding_for_model(model)
@@ -820,8 +861,11 @@ async def openai_embed(
         api_params = {
             "model": api_model,
             "input": texts,
-            "encoding_format": "base64",
         }
+
+        # Add encoding_format parameter (some providers like Yandex don't support base64)
+        # OpenAI client defaults to base64, so we must explicitly set it to "float" if disabled
+        api_params["encoding_format"] = "base64" if EMBEDDING_USE_BASE64 else "float"
 
         # Add dimensions parameter only if embedding_dim is provided
         if embedding_dim is not None:
@@ -934,6 +978,7 @@ async def azure_openai_complete(
     embedding_dim=1536,
     max_token_size=8192,
     model_name="my-text-embedding-3-large-deployment",
+    supports_asymmetric=True,
 )
 async def azure_openai_embed(
     texts: list[str],
@@ -944,6 +989,9 @@ async def azure_openai_embed(
     token_tracker: Any | None = None,
     client_configs: dict[str, Any] | None = None,
     api_version: str | None = None,
+    context: str = "document",
+    query_prefix: str | None = None,
+    document_prefix: str | None = None,
 ) -> np.ndarray:
     """Azure OpenAI embedding wrapper function.
 
@@ -1019,4 +1067,7 @@ async def azure_openai_embed(
         use_azure=True,
         azure_deployment=deployment,
         api_version=api_version,
+        context=context,
+        query_prefix=query_prefix,
+        document_prefix=document_prefix,
     )

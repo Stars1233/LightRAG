@@ -2,11 +2,11 @@
 
 LightRAG 服务器旨在提供 Web 界面和 API 支持。Web 界面便于文档索引、知识图谱探索和简单的 RAG 查询界面。LightRAG 服务器还提供了与 Ollama 兼容的接口，旨在将 LightRAG 模拟为 Ollama 聊天模型。这使得 AI 聊天机器人（如 Open WebUI）可以轻松访问 LightRAG。
 
-![image-20250323122538997](./README.assets/image-20250323122538997.png)
+![image-20250323122538997](./LightRAG-API-Server.assets/image-20250323122538997.png)
 
-![image-20250323122754387](./README.assets/image-20250323122754387.png)
+![image-20250323122754387](./LightRAG-API-Server.assets/image-20250323122754387.png)
 
-![image-20250323123011220](./README.assets/image-20250323123011220.png)
+![image-20250323123011220](./LightRAG-API-Server.assets/image-20250323123011220.png)
 
 ## 入门指南
 
@@ -33,16 +33,25 @@ git clone https://github.com/HKUDS/lightrag.git
 # 进入仓库目录
 cd lightrag
 
-# 使用 uv (推荐)
+# 一键初始化开发环境（推荐）
+make dev
+source .venv/bin/activate  # 激活虚拟环境 (Linux/macOS)
+# Windows 系统: .venv\Scripts\activate
+
+# make dev 会安装测试工具链以及完整的离线依赖栈
+# （API、存储后端与各类 Provider 集成），并构建前端；不会生成 .env。
+# 启动服务前请先运行 make env-base，或手动从 env.example 复制并配置 .env。
+
+# 使用 uv 的等价手动步骤
 # 注意: uv sync 会自动在 .venv/ 目录创建虚拟环境
-uv sync --extra api
+uv sync --extra test --extra offline
 source .venv/bin/activate  # 激活虚拟环境 (Linux/macOS)
 # Windows 系统: .venv\Scripts\activate
 
 # 或使用 pip 与虚拟环境
 # python -m venv .venv
 # source .venv/bin/activate  # Windows: .venv\Scripts\activate
-# pip install -e ".[api]"
+# pip install -e ".[test,offline]"
 
 # 构建前端代码
 cd lightrag_webui
@@ -102,7 +111,17 @@ EMBEDDING_DIM=1024
 # EMBEDDING_BINDING_API_KEY=your_api_key
 ```
 
-> **重要提示**：在文档索引前必须确定使用的Embedding模型，且在文档查询阶段必须沿用与索引阶段相同的模型。有些存储（例如PostgreSQL）在首次建立数表的时候需要确定向量维度，因此更换Embedding模型后需要删除向量相关库表，以便让LightRAG重建新的库表。
+> **重要提示**：在文档索引前必须确定使用的 Embedding 模型和非对称嵌入配置，且在查询阶段必须沿用相同设置。有些存储（例如 PostgreSQL）在首次建立表时需要确定向量维度。更换 Embedding 模型、向量维度、`EMBEDDING_ASYMMETRIC`、query/document 前缀或 provider task 行为后，必须清空现有 LightRAG workspace/向量数据并重新索引源文件。
+
+#### 非对称嵌入配置
+
+LightRAG 默认使用对称嵌入。只有显式设置 `EMBEDDING_ASYMMETRIC=true` 时，才会开启 query/document 非对称嵌入。
+
+- `jina`、`gemini`、`voyageai` 等 provider task 型绑定通过 provider 参数（`task` / `task_type` / `input_type`）区分 query/document，不应配置 query/document 前缀。
+- `openai`、`azure_openai`、`ollama` 等前缀型绑定必须同时配置 `EMBEDDING_QUERY_PREFIX` 和 `EMBEDDING_DOCUMENT_PREFIX`。如果某一侧明确不需要前缀，请使用 `NO_PREFIX`。
+- 任何非对称嵌入配置的有效变更，都需要清空已有数据并重新索引文件。
+
+完整校验规则和示例请参阅 [Asymmetric Embedding Configuration](./AsymmetricEmbedding.md)。
 
 ### 使用 Setup 工具创建 .env 文件
 
@@ -115,7 +134,7 @@ make env-server         # 可选：配置服务端口、鉴权和 SSL
 make env-security-check # 可选：审计当前 .env 中的安全风险
 ```
 
-每个目标的详细说明请参阅 [docs/InteractiveSetup.md](../../docs/InteractiveSetup.md)。
+每个目标的详细说明请参阅 [docs/InteractiveSetup.md](./InteractiveSetup.md)。
 这些 setup 向导只负责更新配置；如需在部署前审计当前 `.env` 的安全风险，请额外运行
 `make env-security-check`。
 
@@ -159,7 +178,7 @@ docker compose up
 # 如果希望启动后让程序退到后台运行，需要在命令的最后添加 -d 参数
 ```
 
-> 可以通过以下链接获取官方的docker compose文件：[docker-compose.yml]( https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml) 。如需获取LightRAG的历史版本镜像，可以访问以下链接: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag). 如需获取更多关于docker部署的信息，请参阅 [DockerDeployment.md](./../../docs/DockerDeployment.md).
+> 可以通过以下链接获取官方的docker compose文件：[docker-compose.yml]( https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml) 。如需获取LightRAG的历史版本镜像，可以访问以下链接: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag). 如需获取更多关于docker部署的信息，请参阅 [DockerDeployment.md](./DockerDeployment.md).
 
 ### Nginx 反向代理配置
 
@@ -228,7 +247,7 @@ server {
 
 ### 离线部署
 
-官方的 LightRAG Docker 镜像完全兼容离线或隔离网络环境。如需搭建自己的离线部署环境，请参考 [离线部署指南](./../../docs/OfflineDeployment.md)。
+官方的 LightRAG Docker 镜像完全兼容离线或隔离网络环境。如需搭建自己的离线部署环境，请参考 [离线部署指南](./OfflineDeployment.md)。
 
 ### 启动多个LightRAG实例
 
@@ -312,7 +331,7 @@ sudo systemctl enable lightrag.service
 
 Open WebUI 使用 LLM 来执行会话标题和会话关键词生成任务。因此，Ollama 聊天补全 API 会检测并将 OpenWebUI 会话相关请求直接转发给底层 LLM。Open WebUI 的截图：
 
-![image-20250323194750379](./README.assets/image-20250323194750379.png)
+![image-20250323194750379](./LightRAG-API-Server.assets/image-20250323194750379.png)
 
 ### 在聊天中选择查询模式
 
@@ -434,25 +453,38 @@ EMBEDDING_MODEL=your-embedding-deployment-name
 
 ## LightRAG 服务器详细配置
 
-API 服务器可以通过三种方式配置（优先级从高到低）：
+API 服务器可以通过两种方式配置（优先级从高到低）：
 
 * 命令行参数
 * 环境变量或 .env 文件
-* Config.ini（仅用于存储配置）
 
-大多数配置都有默认设置，详细信息请查看示例文件：`.env.example`。数据存储配置也可以通过 config.ini 设置。为方便起见，提供了示例文件 `config.ini.example`。
+大多数配置都有默认设置，详细信息请查看示例文件：`.env.example`。存储配置也应通过环境变量或 `.env` 文件设置。
 
 ### 支持的 LLM 和嵌入后端
 
-LightRAG 支持绑定到各种 LLM/嵌入后端：
+LightRAG 支持绑定到各种 LLM 后端：
 
 * ollama
 * openai (含openai 兼容)
 * azure_openai
 * lollms
 * aws_bedrock
+* gemini
+
+LightRAG 支持绑定到各种嵌入后端：
+
+* lollms
+* ollama
+* openai (含 openai 兼容)
+* azure_openai
+* aws_bedrock
+* jina
+* gemini
+* voyageai
 
 使用环境变量 `LLM_BINDING` 或 CLI 参数 `--llm-binding` 选择 LLM 后端类型。使用环境变量 `EMBEDDING_BINDING` 或 CLI 参数 `--embedding-binding` 选择嵌入后端类型。
+
+非对称嵌入需要显式开启。仅当所选嵌入后端支持 provider task 参数或任务前缀时，才设置 `EMBEDDING_ASYMMETRIC=true`。修改这些设置前请先阅读 [Asymmetric Embedding Configuration](./AsymmetricEmbedding.md)，因为任何变更后都必须清空已有数据并重新索引文件。
 
 LLM和Embedding配置例子请查看项目根目录的 env.example 文件。OpenAI和Ollama兼容LLM接口的支持的完整配置选型可以通过一下命令查看：
 
@@ -505,11 +537,11 @@ LIGHTRAG_GRAPH_STORAGE=PGGraphStorage
 LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 ```
 
-在向 LightRAG 添加文档后，您不能更改存储实现选择。目前尚不支持从一个存储实现迁移到另一个存储实现。更多配置信息请阅读示例 `env.exampl`e文件。
+在向 LightRAG 添加文档后，您不能更改存储实现选择。目前尚不支持从一个存储实现迁移到另一个存储实现。更多配置信息请阅读示例 `.env.example` 文件。
 
 ### 在不同存储类型之间迁移LLM缓存
 
-当LightRAG更换存储实现方式的时候，可以LLM缓存从就的存储迁移到新的存储。先以后在新的存储上重新上传文件时，将利用利用原有存储的LLM缓存大幅度加快文件处理的速度。LLM缓存迁移工具的使用方法请参考[README_MIGRATE_LLM_CACHE.md](../tools/README_MIGRATE_LLM_CACHE.md)
+当LightRAG更换存储实现方式的时候，可以LLM缓存从就的存储迁移到新的存储。先以后在新的存储上重新上传文件时，将利用利用原有存储的LLM缓存大幅度加快文件处理的速度。LLM缓存迁移工具的使用方法请参考 [README_MIGRATE_LLM_CACHE.md](../lightrag/tools/README_MIGRATE_LLM_CACHE.md)
 
 ### LightRag API 服务器命令行选项
 
@@ -527,7 +559,7 @@ LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 | --ssl-certfile | None | SSL 证书文件路径（如果启用 --ssl 则必需） |
 | --ssl-keyfile | None | SSL 私钥文件路径（如果启用 --ssl 则必需） |
 | --llm-binding | ollama | LLM 绑定类型（lollms、ollama、openai、openai-ollama、azure_openai、aws_bedrock） |
-| --embedding-binding | ollama | 嵌入绑定类型（lollms、ollama、openai、azure_openai、aws_bedrock） |
+| --embedding-binding | ollama | 嵌入绑定类型（lollms、ollama、openai、azure_openai、aws_bedrock、jina、gemini、voyageai） |
 
 ### Reranking 配置
 
@@ -648,6 +680,11 @@ EMBEDDING_MODEL=bge-m3:latest
 EMBEDDING_DIM=1024
 EMBEDDING_BINDING=ollama
 EMBEDDING_BINDING_HOST=http://localhost:11434
+# 可选：前缀型模型的非对称嵌入配置
+# EMBEDDING_ASYMMETRIC=true
+# EMBEDDING_QUERY_PREFIX="search_query: "
+# EMBEDDING_DOCUMENT_PREFIX="search_document: "
+# 如果某一侧明确不需要前缀，请使用 NO_PREFIX。
 
 ### For JWT Auth
 # AUTH_ACCOUNTS='admin:{bcrypt}$2b$12$replace-with-generated-hash,user1:pass456'
