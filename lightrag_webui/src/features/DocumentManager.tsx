@@ -174,6 +174,10 @@ const DocumentStatusDetailsDialog = ({ doc }: { doc: DocStatusResponse }) => {
       </DialogTrigger>
       <DialogContent
         className="max-w-2xl"
+        onOpenAutoFocus={(e) => {
+          e.preventDefault()
+          ;(e.currentTarget as HTMLElement | null)?.focus()
+        }}
         onCloseAutoFocus={(e) => e.preventDefault()}
       >
         <DialogHeader>
@@ -196,7 +200,7 @@ const DocumentStatusDetailsDialog = ({ doc }: { doc: DocStatusResponse }) => {
           >
             <CopyIcon className="h-4 w-4" />
           </Button>
-          <div className="max-h-[60vh] min-h-[7.5em] overflow-y-auto p-3 pr-12">
+          <div className="max-h-[60vh] overflow-y-auto p-3 pr-12">
             <pre className="whitespace-pre-wrap break-words text-sm">{details}</pre>
           </div>
         </div>
