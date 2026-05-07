@@ -1138,25 +1138,45 @@ export default function DocumentManager() {
   }, [clearPollingInterval, setStatusCounts, fetchDocuments, currentTab, health, startPollingInterval])
 
 
-  // Handle showFileName change - switch sort field if currently sorting by first column
-  useEffect(() => {
-    // Only switch if currently sorting by the first column (id or file_path)
+  // Handle showFileName change - switch sort field if currently sorting by first column.
+  // Render-time comparison avoids cascading renders flagged by react-hooks/set-state-in-effect.
+  const [previousShowFileName, setPreviousShowFileName] = useState(showFileName)
+  if (showFileName !== previousShowFileName) {
+    setPreviousShowFileName(showFileName)
     if (sortField === 'id' || sortField === 'file_path') {
       const newSortField = showFileName ? 'file_path' : 'id';
       if (sortField !== newSortField) {
         setSortField(newSortField);
       }
     }
-  }, [showFileName, sortField]);
+  }
 
-  // Reset selection state when page, status filter, or sort changes
-  useEffect(() => {
+  // Reset selection state when page, status filter, or sort changes (render-time comparison).
+  const [previousSelectionDeps, setPreviousSelectionDeps] = useState({
+    page: pagination.page,
+    statusFilter,
+    sortField,
+    sortDirection
+  })
+  if (
+    previousSelectionDeps.page !== pagination.page ||
+    previousSelectionDeps.statusFilter !== statusFilter ||
+    previousSelectionDeps.sortField !== sortField ||
+    previousSelectionDeps.sortDirection !== sortDirection
+  ) {
+    setPreviousSelectionDeps({
+      page: pagination.page,
+      statusFilter,
+      sortField,
+      sortDirection
+    })
     setSelectedDocIds([])
-  }, [pagination.page, statusFilter, sortField, sortDirection]);
+  }
 
-  // Central effect to handle all data fetching
+  // Central effect to handle all data fetching - genuine side effect (network call)
   useEffect(() => {
     if (currentTab === 'documents') {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       fetchPaginatedDocuments(pagination.page, pagination.page_size, statusFilter);
     }
   }, [
